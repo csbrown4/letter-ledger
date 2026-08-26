@@ -431,15 +431,30 @@ function sessionCard(dateKey, s) {
   </div>`;
 }
 
+function greetingTarget(fullName) {
+  if (!fullName) return "Colleague";
+  const m = fullName.trim().match(/^(Dr|Doctor|Mr|Mrs|Ms|Miss)\.?\s+(.+)$/i);
+  if (!m) return "Colleague";
+  const title = m[1].toLowerCase();
+  const parts = m[2].trim().split(/\s+/);
+  if (title.startsWith("dr")) return `Dr ${parts[parts.length-1]}`;
+  return parts[0];
+}
+function composeSubjectBody(l) {
+  const doctorSurname = (l.doctor||"").trim().split(/\s+/).slice(-1)[0];
+  const subject = `${l.name} — correspondence from Dr ${l.doctor}`;
+  const bodyFor = (name) => `Dear ${greetingTarget(name)},\n\nPlease find attached correspondence from Dr ${doctorSurname} for this mutual patient.\n\nKind regards,`;
+  return { subject, bodyTo: bodyFor(l.recipient_name), bodyCc: bodyFor(l.cc_name) };
+}
+
 function letterRow(l, ink) {
   const ageDays = dayDiff(new Date(), parseKey(l.date));
   const urgency = l.sent ? null : (ageDays>=5?"red":ageDays>=3?"amber":null);
   const rowStyle = urgency==="red" ? "background:#FDF1EF;border-color:#E9B3A8;" : urgency==="amber" ? "background:#FCF6E8;border-color:#E9CE94;" : "";
   const expanded = state.expandedLetterId === l.id;
-  const subject = `${l.name} — correspondence from Dr ${l.doctor}`;
-  const body = `Please find attached the correspondence for ${l.name} (Dr ${l.doctor}, ${fmtLong(parseKey(l.date))}).`;
-  const mailTo = l.recipient ? `mailto:${l.recipient}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` : null;
-  const mailCc = l.cc ? `mailto:${l.cc}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}` : null;
+  const { subject, bodyTo, bodyCc } = composeSubjectBody(l);
+  const mailTo = l.recipient ? `mailto:${l.recipient}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyTo)}` : null;
+  const mailCc = l.cc ? `mailto:${l.cc}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyCc)}` : null;
 
   return `
   <div class="bg-white rounded-md border border-stone-200 px-1.5 py-1.5" style="${rowStyle}">
@@ -517,7 +532,7 @@ function settingsModal() {
       ${state.contacts.map(c => `
       <div class="flex items-center justify-between px-2.5 py-1.5 gap-2">
         <div class="min-w-0">
-          <p class="text-xs text-stone-700 truncate">${esc(c.name)}</p>
+          <p class="text-xs text-stone-700 truncate">${esc(c.name)} <span class="text-[9px] uppercase tracking-wide text-stone-400">(${c.value.includes("fax.clicksend.com")?"fax":"email"})</span></p>
           <p class="text-[10px] font-mono text-stone-400 truncate">${esc(c.value)}</p>
         </div>
         <button data-act="removeContactBtn" data-id="${c.id}" class="shrink-0 text-stone-300 hover:text-red-500">✕</button>
@@ -542,7 +557,7 @@ function settingsModal() {
 function modalShell(title, subtitle, closeAct, inner) {
   return `
   <div class="fixed inset-0 bg-stone-900/40 flex items-center justify-center p-4 z-50" data-act="${closeAct}">
-    <div class="bg-white rounded-lg shadow-lg max-w-md w-full p-5" onclick="event.stopPropagation()">
+    <div class="bg-white rounded-lg shadow-lg max-w-md w-full p-5" data-act="noop">
       <div class="flex items-start justify-between mb-3">
         <div><h2 class="text-base font-semibold text-stone-800">${title}</h2><p class="text-xs text-stone-500 mt-0.5">${subtitle}</p></div>
         <button data-act="${closeAct}" class="text-stone-400 hover:text-stone-600 shrink-0">✕</button>
@@ -562,12 +577,13 @@ function attachMainHandlers() {
   app.querySelectorAll('[data-act="editContactField"]').forEach(inp => {
     inp.addEventListener("input", () => {
       editLetterLocal(inp.dataset.id, inp.dataset.field, inp.value);
+      editLetterLocal(inp.dataset.id, inp.dataset.field + "_name", ""); // manual edit invalidates the known contact name
       const box = app.querySelector(`.contact-suggest[data-suggest-for="${inp.dataset.id}-${inp.dataset.field}"]`);
       const matches = contactSuggestions(inp.value);
       if (matches.length) {
         box.classList.remove("hidden");
         box.innerHTML = matches.map(c => `
-          <button type="button" data-suggest-pick data-id="${inp.dataset.id}" data-field="${inp.dataset.field}" data-value="${esc(c.value)}" data-cc="${esc(c.cc||'')}"
+          <button type="button" data-suggest-pick data-id="${inp.dataset.id}" data-field="${inp.dataset.field}" data-value="${esc(c.value)}" data-name="${esc(c.name)}" data-cc="${esc(c.cc||'')}"
             class="w-full text-left px-2 py-1.5 text-xs hover:bg-stone-50 flex items-center justify-between gap-2">
             <span class="truncate">${esc(c.name)}</span>
             <span class="text-[9px] uppercase tracking-wide text-stone-400 shrink-0">${c.value.includes("fax.clicksend.com")?"fax":"email"}</span>
@@ -575,9 +591,10 @@ function attachMainHandlers() {
         box.querySelectorAll("[data-suggest-pick]").forEach(btn => {
           btn.addEventListener("mousedown", e => {
             e.preventDefault();
-            const id = btn.dataset.id, field = btn.dataset.field, value = btn.dataset.value, cc = btn.dataset.cc;
+            const id = btn.dataset.id, field = btn.dataset.field, value = btn.dataset.value, name = btn.dataset.name, cc = btn.dataset.cc;
             inp.value = value;
             editLetterLocal(id, field, value);
+            editLetterLocal(id, field + "_name", name);
             if (field==="recipient" && cc) {
               const l = state.letters.find(x=>x.id===id);
               if (l && !l.cc) editLetterLocal(id, "cc", cc);
