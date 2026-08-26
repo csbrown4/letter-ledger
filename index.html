@@ -123,22 +123,54 @@ async function loadAll() {
 
 function subscribeRealtime() {
   sb.channel("letters-changes")
-    .on("postgres_changes", { event: "*", schema: "public", table: "letters" }, () => {
-      refreshIfIdle();
+    .on("postgres_changes", { event: "*", schema: "public", table: "letters" }, (payload) => {
+      applyLetterChange(payload);
     })
-    .on("postgres_changes", { event: "*", schema: "public", table: "session_meta" }, () => {
-      refreshIfIdle();
+    .on("postgres_changes", { event: "*", schema: "public", table: "session_meta" }, (payload) => {
+      applyMetaChange(payload);
     })
-    .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, () => {
-      refreshIfIdle();
+    .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, (payload) => {
+      applyContactChange(payload);
     })
     .subscribe();
 }
-async function refreshIfIdle() {
+
+// Patch just the row that changed instead of refetching everything — a full refetch
+// can land mid-save and stomp a value that's still writing.
+function applyLetterChange(payload) {
+  if (payload.eventType === "DELETE") {
+    state.letters = state.letters.filter(l => l.id !== payload.old.id);
+  } else {
+    const idx = state.letters.findIndex(l => l.id === payload.new.id);
+    if (idx >= 0) state.letters[idx] = { ...state.letters[idx], ...payload.new };
+    else state.letters.push(payload.new);
+  }
+  renderIfSafe();
+}
+function applyMetaChange(payload) {
+  if (payload.eventType === "DELETE") {
+    state.sessionMeta = state.sessionMeta.filter(m => !(m.date===payload.old.date && m.session_id===payload.old.session_id));
+  } else {
+    const idx = state.sessionMeta.findIndex(m => m.date===payload.new.date && m.session_id===payload.new.session_id);
+    if (idx >= 0) state.sessionMeta[idx] = { ...state.sessionMeta[idx], ...payload.new };
+    else state.sessionMeta.push(payload.new);
+  }
+  renderIfSafe();
+}
+function applyContactChange(payload) {
+  if (payload.eventType === "DELETE") {
+    state.contacts = state.contacts.filter(c => c.id !== payload.old.id);
+  } else {
+    const idx = state.contacts.findIndex(c => c.id === payload.new.id);
+    if (idx >= 0) state.contacts[idx] = { ...state.contacts[idx], ...payload.new };
+    else { state.contacts.push(payload.new); state.contacts.sort((a,b)=>a.name.localeCompare(b.name)); }
+  }
+  renderIfSafe();
+}
+function renderIfSafe() {
   const active = document.activeElement;
   const appEl = document.getElementById("app");
-  if (active && appEl.contains(active) && active.tagName !== "BODY") return; // don't clobber someone mid-edit
-  await loadAll();
+  if (active && appEl.contains(active) && active.tagName !== "BODY") return; // don't redraw over someone mid-edit
   render();
 }
 
@@ -211,12 +243,16 @@ async function toggleDictation(dateKey, sessionId, doctor) {
   if (error) showError(error.message || "Couldn't save that.");
 }
 async function addContactsBulk(text) {
-  const rows = text.split("\n").map(l=>l.trim()).filter(Boolean).map(line => {
-    const parts = line.split(",").map(p=>p.trim()).filter(p=>p.length);
+  const lines = text.split("\n").map(l=>l.trim()).filter(Boolean);
+  const rows = lines.map(line => {
+    const parts = line.split(/\t|,/).map(p=>p.trim()).filter(p=>p.length);
     if (parts.length<2) return null;
     return { name: parts[0], value: parts[1], cc: parts[2]||"" };
   }).filter(Boolean);
-  if (!rows.length) return 0;
+  if (!rows.length) {
+    if (lines.length) showError(`Couldn't read that as "Name, address" — got: "${lines[0]}". Make sure there's a comma (or tab) between the name and the address.`);
+    return 0;
+  }
   const { data, error } = await sb.from("contacts").insert(rows).select();
   if (error) { showError(error.message || "Couldn't save those contacts."); return 0; }
   if (data) { state.contacts.push(...data); state.contacts.sort((a,b)=>a.name.localeCompare(b.name)); }
@@ -453,8 +489,9 @@ function letterRow(l, ink) {
   const rowStyle = urgency==="red" ? "background:#FDF1EF;border-color:#E9B3A8;" : urgency==="amber" ? "background:#FCF6E8;border-color:#E9CE94;" : "";
   const expanded = state.expandedLetterId === l.id;
   const { subject, bodyTo, bodyCc } = composeSubjectBody(l);
-  const mailTo = l.recipient ? `mailto:${l.recipient}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyTo)}` : null;
-  const mailCc = l.cc ? `mailto:${l.cc}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyCc)}` : null;
+  const isFax = addr => (addr||"").includes("fax.clicksend.com");
+  const mailTo = l.recipient ? `mailto:${l.recipient}?subject=${encodeURIComponent(subject)}${isFax(l.recipient) ? "" : `&body=${encodeURIComponent(bodyTo)}`}` : null;
+  const mailCc = l.cc ? `mailto:${l.cc}?subject=${encodeURIComponent(subject)}${isFax(l.cc) ? "" : `&body=${encodeURIComponent(bodyCc)}`}` : null;
 
   return `
   <div class="bg-white rounded-md border border-stone-200 px-1.5 py-1.5" style="${rowStyle}">
