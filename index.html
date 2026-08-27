@@ -29,8 +29,7 @@
 <script>
 /* ============================= CONFIG ============================= */
 const SUPABASE_URL = "https://elryfloijdkqmkoqypqc.supabase.co";
-const SUPABASE_KEY = "sb_publishable_H8ODkVBdlDkrfgwLEfNZYw__hmWrF95";
-const PASSCODE = "letters";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVscnlmbG9pamRrcW1rb3F5cHFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1NjE3MjUsImV4cCI6MjEwMzEzNzcyNX0.uY9UU1GvIFd2M5NkADkd88wjIEbhclu9bg8enq7qehk";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /* ============================= SCHEDULE ============================= */
@@ -72,7 +71,8 @@ function weekIndexFor(monday, anchorMonday) {
 
 /* ============================= STATE ============================= */
 const state = {
-  unlocked: sessionStorage.getItem("ll_unlocked")==="yes",
+  unlocked: false,
+  currentUserEmail: null,
   loaded: false,
   anchorMonday: null,
   viewedMonday: mondayOf(new Date()),
@@ -207,13 +207,14 @@ async function addLettersBulk(dateKey, sessionId, doctor, names) {
 async function toggleSent(id) {
   const l = state.letters.find(x=>x.id===id);
   if (!l) return;
-  const prevSent = l.sent, prevAt = l.sent_at;
+  const prevSent = l.sent, prevAt = l.sent_at, prevBy = l.sent_by;
   l.sent = !l.sent;
   l.sent_at = l.sent ? new Date().toISOString() : null;
+  l.sent_by = l.sent ? (state.currentUserEmail || "") : "";
   l._justToggled = l.sent;
   render();
-  const { error } = await sb.from("letters").update({ sent: l.sent, sent_at: l.sent_at }).eq("id", id);
-  if (error) { l.sent = prevSent; l.sent_at = prevAt; showError(error.message || "Couldn't update that letter."); render(); return; }
+  const { error } = await sb.from("letters").update({ sent: l.sent, sent_at: l.sent_at, sent_by: l.sent_by }).eq("id", id);
+  if (error) { l.sent = prevSent; l.sent_at = prevAt; l.sent_by = prevBy; showError(error.message || "Couldn't update that letter."); render(); return; }
   setTimeout(() => { l._justToggled = false; }, 1200);
 }
 function editLetterLocal(id, field, value) {
@@ -286,27 +287,38 @@ function lockScreen() {
   return `
   <div class="max-w-sm mx-auto mt-24 bg-white border border-stone-200 rounded-lg p-8 shadow-sm">
     <p class="font-mono text-xs tracking-widest uppercase text-[#2F6F62] mb-2">Letter Ledger</p>
-    <h1 class="text-xl font-semibold text-stone-800 mb-4">Enter passcode</h1>
-    <input id="passInput" type="password" class="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-[#BEDAD2]" placeholder="Passcode" />
-    <p id="passError" class="text-xs text-red-600 mb-2 hidden">Wrong passcode.</p>
-    <button id="passBtn" class="w-full bg-[#1F4E45] hover:bg-[#173B34] text-white text-sm font-medium py-2.5 rounded-md">Unlock</button>
+    <h1 class="text-xl font-semibold text-stone-800 mb-4">Staff sign in</h1>
+    <label class="block text-xs font-mono uppercase tracking-wide text-stone-500 mb-1">Email</label>
+    <input id="loginEmail" type="email" autocomplete="username" class="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-[#BEDAD2]" placeholder="firstname@letters.com" />
+    <label class="block text-xs font-mono uppercase tracking-wide text-stone-500 mb-1">Password</label>
+    <input id="loginPassword" type="password" autocomplete="current-password" class="w-full border border-stone-300 rounded-md px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-[#BEDAD2]" placeholder="Password" />
+    <p id="loginError" class="text-xs text-red-600 mb-2 hidden"></p>
+    <button id="loginBtn" class="w-full bg-[#1F4E45] hover:bg-[#173B34] text-white text-sm font-medium py-2.5 rounded-md">Sign in</button>
   </div>`;
 }
 function attachLockHandlers() {
-  const btn = document.getElementById("passBtn");
-  const input = document.getElementById("passInput");
-  const tryUnlock = () => {
-    if (input.value === PASSCODE) {
-      sessionStorage.setItem("ll_unlocked","yes");
-      state.unlocked = true;
-      boot();
-    } else {
-      document.getElementById("passError").classList.remove("hidden");
+  const btn = document.getElementById("loginBtn");
+  const emailInput = document.getElementById("loginEmail");
+  const passInput = document.getElementById("loginPassword");
+  const errEl = document.getElementById("loginError");
+  const trySignIn = async () => {
+    errEl.classList.add("hidden");
+    btn.disabled = true;
+    btn.textContent = "Signing in…";
+    const { error } = await sb.auth.signInWithPassword({ email: emailInput.value.trim(), password: passInput.value });
+    if (error) {
+      errEl.textContent = error.message || "Couldn't sign in.";
+      errEl.classList.remove("hidden");
+      btn.disabled = false;
+      btn.textContent = "Sign in";
+      return;
     }
+    state.unlocked = true;
+    boot();
   };
-  btn.onclick = tryUnlock;
-  input.addEventListener("keydown", e => { if (e.key==="Enter") tryUnlock(); });
-  input.focus();
+  btn.onclick = trySignIn;
+  passInput.addEventListener("keydown", e => { if (e.key==="Enter") trySignIn(); });
+  emailInput.focus();
 }
 
 function loadingScreen() {
@@ -360,6 +372,7 @@ function mainScreen() {
           outstanding
         </button>
         <button data-act="openSettings" class="w-9 h-9 flex items-center justify-center rounded-full border border-stone-300 hover:border-stone-400 text-stone-600">⚙</button>
+        <button data-act="signOut" class="w-9 h-9 flex items-center justify-center rounded-full border border-stone-300 hover:border-stone-400 text-stone-600" title="Sign out">⎋</button>
       </div>
     </div>
 
@@ -500,6 +513,7 @@ function letterRow(l, ink) {
         ${l.sent?'<span class="text-white text-[10px] font-bold">✓</span>':''}
       </button>
       <input value="${esc(l.name)}" data-act="editName" data-id="${l.id}" class="flex-1 min-w-0 text-sm bg-transparent focus:outline-none ${l.sent?'line-through text-stone-400':'text-stone-800'}" />
+      ${l.sent && l.sent_by ? `<span title="Sent by ${esc(l.sent_by)}" class="shrink-0 w-4 h-4 rounded-full bg-stone-200 text-stone-600 text-[9px] font-semibold flex items-center justify-center select-none">${esc(l.sent_by.trim()[0].toUpperCase())}</span>` : ""}
       ${l._justToggled && l.sent ? `<span class="stamp-anim font-mono text-[9px] uppercase tracking-widest border-2 rounded px-1 py-0.5 shrink-0 select-none" style="color:${STAMP_INK};border-color:${STAMP_INK};transform:rotate(-12deg);">sent</span>` : ""}
       <button data-act="toggleExpand" data-id="${l.id}" class="shrink-0 p-1 text-stone-400 hover:text-stone-600" title="Recipient details">✉</button>
       <button data-act="removeLetter" data-id="${l.id}" class="shrink-0 p-1 text-stone-300 hover:text-red-500" title="Remove">✕</button>
@@ -662,6 +676,7 @@ function onAppClick(e) {
   else if (act==="nextWeek") { state.viewedMonday = addDays(state.viewedMonday,7); render(); }
   else if (act==="today") { state.viewedMonday = mondayOf(new Date()); render(); }
   else if (act==="openSettings") { state.settingsOpen=true; render(); }
+  else if (act==="signOut") { sb.auth.signOut(); }
   else if (act==="closeSettings") { state.settingsOpen=false; render(); }
   else if (act==="openOutstanding") { state.outstandingOpen=true; render(); }
   else if (act==="closeOutstanding") { state.outstandingOpen=false; render(); }
@@ -708,6 +723,9 @@ function onAppClick(e) {
 
 /* ============================= BOOT ============================= */
 async function boot() {
+  const { data: { session } } = await sb.auth.getSession();
+  state.unlocked = !!session;
+  state.currentUserEmail = (session && session.user && session.user.email) || null;
   render();
   if (!state.unlocked) return;
   await loadAll();
@@ -715,6 +733,9 @@ async function boot() {
   await weeklyBackupCheck();
   subscribeRealtime();
 }
+sb.auth.onAuthStateChange((event) => {
+  if (event === "SIGNED_OUT") { state.unlocked = false; state.loaded = false; state.currentUserEmail = null; render(); }
+});
 boot();
 </script>
 </body>
